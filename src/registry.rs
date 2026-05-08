@@ -86,8 +86,14 @@ pub fn unregister() -> Result<(), String> {
     Ok(())
 }
 
+/// Tell Explorer to refresh its file-association cache so the new icon and
+/// "Open with" handler appear without a logoff. This is a fire-and-forget
+/// notification — no failure mode worth handling.
 fn notify_shell_assoc_changed() {
     use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+    // Reason: SHChangeNotify is the only way to broadcast association
+    // changes; the call has no error path to inspect.
+    #[allow(unsafe_code)]
     unsafe {
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
