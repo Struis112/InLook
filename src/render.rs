@@ -1,6 +1,14 @@
 use mail_parser::{Address, MessageParser, MimeHeaders};
 use std::path::Path;
 
+/// Truncate any single body part larger than this before embedding it in the
+/// page. Bodies that big are pathological — typically a single huge inline
+/// image or a hostile EML — and rendering them blocks WebView2 for seconds.
+const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
+
+/// Render a parsed EML byte slice into a self-contained HTML page suitable for
+/// loading into a WebView2 surface. The returned page sandboxes any embedded
+/// HTML body, applies a strict CSP, and HTML-escapes every header value.
 pub fn render_eml_to_html(bytes: &[u8], path: &Path) -> String {
     let Some(msg) = MessageParser::default().parse(bytes) else {
         return error_page("Could not parse this file as a valid email message.", path);
@@ -12,28 +20,31 @@ pub fn render_eml_to_html(bytes: &[u8], path: &Path) -> String {
     let subject = msg.subject().unwrap_or("(no subject)");
     let date = msg
         .date()
-        .map(|d| d.to_rfc822())
+        .map(mail_parser::DateTime::to_rfc822)
         .unwrap_or_else(|| "(no date)".to_string());
 
-    let body_html = msg.body_html(0).map(|c| c.into_owned());
-    let body_text = msg.body_text(0).map(|c| c.into_owned());
+    let body_html = msg.body_html(0).map(std::borrow::Cow::into_owned);
+    let body_text = msg.body_text(0).map(std::borrow::Cow::into_owned);
 
     let body_section = match (body_html, body_text) {
         (Some(html), _) => render_html_body(&html),
         (None, Some(text)) => format!(
             r#"<pre class="body-text">{}</pre>"#,
-            html_escape::encode_text(&text)
+            html_escape::encode_text(&truncate_lossy(&text, MAX_BODY_BYTES))
         ),
         (None, None) => "<p class=\"empty\"><em>This message has no body.</em></p>".to_string(),
     };
 
     let mut attachments = String::new();
-    let mut count = 0usize;
+    let mut count = 0_usize;
     for att in msg.attachments() {
         count += 1;
         let name = att
             .attachment_name()
-            .or_else(|| att.content_type().and_then(|c| c.subtype()))
+            .or_else(|| {
+                att.content_type()
+                    .and_then(mail_parser::ContentType::subtype)
+            })
             .unwrap_or("(unnamed)");
         let size = att.contents().len();
         attachments.push_str(&format!(
@@ -45,9 +56,9 @@ pub fn render_eml_to_html(bytes: &[u8], path: &Path) -> String {
     let attachments_section = if count == 0 {
         String::new()
     } else {
+        let plural = if count == 1 { "" } else { "s" };
         format!(
-            r#"<details class="atts" open><summary>{count} attachment{plural}</summary><ul>{attachments}</ul><p class="hint">Use the <code>extract</code> feature on a future build to save attachments.</p></details>"#,
-            plural = if count == 1 { "" } else { "s" },
+            r#"<details class="atts" open><summary>{count} attachment{plural}</summary><ul>{attachments}</ul></details>"#,
         )
     };
 
@@ -101,8 +112,6 @@ iframe.body {{ flex: 1; width: 100%; border: none; min-height: 320px; background
 .atts ul {{ margin: 8px 0 0; padding-left: 20px; list-style: none; }}
 .atts li {{ padding: 4px 0; }}
 .atts .size {{ color: var(--muted); font-size: 12px; margin-left: 8px; }}
-.atts .hint {{ font-size: 11px; color: var(--muted); margin: 8px 0 0; }}
-.atts code {{ background: #edf2f7; padding: 1px 5px; border-radius: 3px; }}
 footer {{
   padding: 8px 24px; font-size: 11px; color: var(--muted);
   background: var(--card); border-top: 1px solid var(--border);
@@ -133,12 +142,7 @@ footer .path {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; 
         subject_title = html_escape::encode_text(subject),
         brand = "Struis ICT — Free Software",
         subject = html_escape::encode_text(subject),
-        from = from,
-        to = to,
-        cc_row = cc_row,
         date = html_escape::encode_text(&date),
-        body_section = body_section,
-        attachments_section = attachments_section,
         path_str = html_escape::encode_text(&path_str),
         path_attr = html_escape::encode_double_quoted_attribute(&path_str),
     )
@@ -146,15 +150,17 @@ footer .path {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; 
 
 fn render_html_body(html: &str) -> String {
     // Wrap the email's HTML in our own document with a strict CSP that blocks
-    // remote loads (no tracking pixels, no remote scripts/css). Sandbox the
-    // iframe so scripts and forms are disabled even if the CSP is bypassed.
+    // remote loads (no tracking pixels, no remote scripts/css). The iframe
+    // sandbox is empty (`sandbox=""`), which disables scripts, forms, popups,
+    // top-navigation, downloads, and same-origin. Defense-in-depth: if the
+    // CSP is bypassed, the sandbox still contains the content.
+    let safe = truncate_lossy(html, MAX_BODY_BYTES);
     let wrapped = format!(
         r#"<!doctype html>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline' data:; font-src data:; media-src data:;">
-<base target="_blank">
 <style>body{{margin:0;padding:16px 24px;font:14px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;color:#1a1f2c;}} img{{max-width:100%;height:auto}}</style>
-{html}"#,
+{safe}"#,
     );
     let escaped = html_escape::encode_double_quoted_attribute(&wrapped);
     format!(r#"<iframe class="body" sandbox="" srcdoc="{escaped}"></iframe>"#)
@@ -197,16 +203,32 @@ fn human_bytes(n: usize) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
-    let n = n as f64;
-    if n >= GB {
-        format!("{:.1} GB", n / GB)
-    } else if n >= MB {
-        format!("{:.1} MB", n / MB)
-    } else if n >= KB {
-        format!("{:.1} KB", n / KB)
+    let f = n as f64;
+    if f >= GB {
+        format!("{:.1} GB", f / GB)
+    } else if f >= MB {
+        format!("{:.1} MB", f / MB)
+    } else if f >= KB {
+        format!("{:.1} KB", f / KB)
     } else {
-        format!("{} B", n as usize)
+        format!("{n} B")
     }
+}
+
+/// Truncate `s` to at most `max` bytes, preserving valid UTF-8 by stepping
+/// back to the previous char boundary. Appends a notice when truncated.
+fn truncate_lossy(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut cut = max;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::with_capacity(cut + 64);
+    out.push_str(&s[..cut]);
+    out.push_str("\n[…truncated by InLook — body exceeded size limit…]");
+    out
 }
 
 fn error_page(msg: &str, path: &Path) -> String {
@@ -220,4 +242,82 @@ h1{{color:#c53030;font-size:18px}} .path{{color:#666;font-family:monospace;font-
         html_escape::encode_text(msg),
         html_escape::encode_text(&path.display().to_string())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn human_bytes_thresholds() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(human_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn format_addr_with_name() {
+        let s = format_single_addr(Some("Alice"), Some("alice@example.com"));
+        assert!(s.contains("Alice"));
+        assert!(s.contains("alice@example.com"));
+    }
+
+    #[test]
+    fn format_addr_escapes_html() {
+        let s = format_single_addr(Some("<script>"), Some("a@b"));
+        assert!(!s.contains("<script>"));
+        assert!(s.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn truncate_preserves_utf8_boundary() {
+        // 'é' is 2 bytes (0xC3 0xA9). Cut at 4 should land on a boundary.
+        let s = "café — déjà vu";
+        let out = truncate_lossy(s, 5);
+        assert!(out.contains("café"));
+        assert!(out.contains("truncated by InLook"));
+    }
+
+    #[test]
+    fn truncate_no_op_when_small() {
+        let s = "short";
+        assert_eq!(truncate_lossy(s, 100), "short");
+    }
+
+    #[test]
+    fn renders_simple_eml() {
+        let eml = b"From: alice@example.com\r\n\
+                    To: bob@example.com\r\n\
+                    Subject: Hello world\r\n\
+                    Date: Fri, 09 May 2026 10:00:00 +0200\r\n\
+                    \r\n\
+                    body content here\r\n";
+        let html = render_eml_to_html(eml, &PathBuf::from("test.eml"));
+        assert!(html.contains("Hello world"));
+        assert!(html.contains("alice@example.com"));
+        assert!(html.contains("bob@example.com"));
+        assert!(html.contains("body content here"));
+        assert!(html.contains("InLook"));
+    }
+
+    #[test]
+    fn html_body_is_sandboxed() {
+        let eml = b"From: a@x\r\n\
+                    Subject: t\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <script>alert(1)</script><p>hi</p>\r\n";
+        let html = render_eml_to_html(eml, &PathBuf::from("t.eml"));
+        assert!(html.contains(r#"sandbox="""#));
+        // The script should be inside an attribute (escaped), not a top-level tag.
+        assert!(!html.contains("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn malformed_input_does_not_panic() {
+        let _ = render_eml_to_html(b"\x00\xff\xfe garbage", &PathBuf::from("x.eml"));
+    }
 }
