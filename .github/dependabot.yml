@@ -13,6 +13,15 @@ updates:
         update-types:
           - minor
           - patch
+    # Major bumps of these crates require code adaptation (the WebView2 host
+    # stack and the Win32 registry helper redesigned their builder/error APIs
+    # in their 0.5x/0.6x releases). Patches and minors still come through;
+    # majors should be done as a single coordinated upgrade PR.
+    ignore:
+      - dependency-name: wry
+        update-types: ["version-update:semver-major"]
+      - dependency-name: windows-registry
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
