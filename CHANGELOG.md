@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Struis112/InLook/compare/v0.3.1...v0.4.0) (2026-05-12)
+
+
+### Features
+
+* bundle app icon and auto-generate macOS .icns ([#18](https://github.com/Struis112/InLook/issues/18)) ([5d5918a](https://github.com/Struis112/InLook/commit/5d5918a98c43819dd14be3990ee5610766f2e69f))
+
 ## [0.3.1](https://github.com/Struis112/InLook/compare/v0.3.0...v0.3.1) (2026-05-12)
 
 
