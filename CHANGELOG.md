@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/Struis112/InLook/compare/v0.3.0...v0.3.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* build AppImage on FUSE-less runners ([#16](https://github.com/Struis112/InLook/issues/16)) ([f896aa7](https://github.com/Struis112/InLook/commit/f896aa7112fcd67db664f40ed7746f5264ab6b59))
+
 ## [0.3.0](https://github.com/Struis112/InLook/compare/v0.2.0...v0.3.0) (2026-05-12)
 
 
