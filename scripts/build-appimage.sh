@@ -56,7 +56,10 @@ if [[ ! -x "$TOOL" ]]; then
 fi
 
 OUT_FILE="$OUT/InLook-${VERSION}-x86_64.AppImage"
-ARCH=x86_64 "$TOOL" --no-appstream "$WORK" "$OUT_FILE"
+# --appimage-extract-and-run: appimagetool itself is an AppImage, and on a
+# fresh GitHub-hosted runner libfuse2 isn't installed. Telling it to extract
+# instead of mounting via FUSE makes the build self-contained.
+ARCH=x86_64 "$TOOL" --appimage-extract-and-run --no-appstream "$WORK" "$OUT_FILE"
 
 echo "Built: $OUT_FILE"
 ls -lh "$OUT_FILE"

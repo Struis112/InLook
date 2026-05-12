@@ -90,16 +90,20 @@ jobs:
       - name: Build .deb
         run: cargo deb --no-build
 
-      - name: Build AppImage
-        run: bash scripts/build-appimage.sh ${{ needs.release-please.outputs.tag_name }}
-
-      - name: Attach Linux artifacts to GitHub Release
+      - name: Attach .deb to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: |
-            target/debian/*.deb
-            dist/*.AppImage
+          files: target/debian/*.deb
+
+      - name: Build AppImage
+        run: bash scripts/build-appimage.sh ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Attach AppImage to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: dist/*.AppImage
 
   build-macos:
     name: Build macOS .dmg (universal)
